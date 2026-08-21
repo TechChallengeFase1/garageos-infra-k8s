@@ -1,0 +1,23 @@
+# Diretorio de trabalho do Terraform
+.terraform/
+.terraform.tfstate.lock.info
+
+# State local. O state real vive no S3 (ver backend em versions.tf).
+*.tfstate
+*.tfstate.*
+
+# Valores reais de variaveis. Os *.tfvars de ambiente sao versionados de
+# proposito (nao contem segredo), por isso as excecoes.
+*.tfvars
+!homolog.tfvars
+!producao.tfvars
+
+# Planos salvos podem conter valores sensiveis em texto puro
+*.tfplan
+
+# Kubeconfig gerado localmente por `aws eks update-kubeconfig`
+kubeconfig
+kubeconfig-*
+
+# NOTA: .terraform.lock.hcl NAO entra aqui. Ele trava as versoes exatas dos
+# providers e deve ser commitado.
