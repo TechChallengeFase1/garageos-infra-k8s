@@ -1,0 +1,169 @@
+name: Terraform
+
+# Mesma estrategia do garageos-infra-database:
+#
+#   Pull Request  -> fmt + validate + plan. Nunca aplica.
+#   push homolog  -> apply no workspace "homolog"
+#   push main     -> apply no workspace "producao"
+#
+# Autenticacao por OIDC. Nenhuma credencial estatica da AWS neste repositorio.
+#
+# ATENCAO AO TEMPO: criar um cluster EKS leva 10 a 15 minutos, e o node group
+# mais alguns. A execucao pode passar de 20 minutos e parecer travada - e o
+# comportamento normal.
+
+on:
+  pull_request:
+    branches: [homolog, main]
+  push:
+    branches: [homolog, main]
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: Ambiente alvo
+        required: true
+        type: choice
+        options: [homolog, producao]
+      acao:
+        description: "plan (seguro) ou destroy (derruba o cluster inteiro)"
+        required: true
+        default: plan
+        type: choice
+        options: [plan, destroy]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE: arn:aws:iam::266380777968:role/garageos-github-actions
+  TF_VERSION: 1.15.7
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: ${{ github.event_name == 'pull_request' && 'Validar' || 'Aplicar' }}
+    runs-on: ubuntu-latest
+    # O EKS e lento: o padrao de 360 min e generoso demais e o de falha rapida
+    # nao serve. 45 minutos cobre criacao completa com folga.
+    timeout-minutes: 45
+
+    environment: ${{ github.event_name == 'pull_request' && 'validacao' || (github.ref_name == 'main' && 'producao' || 'homolog') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Definir ambiente alvo
+        id: ctx
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "env=${{ inputs.ambiente }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "main" ] || [ "${{ github.base_ref }}" = "main" ]; then
+            echo "env=producao" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=homolog" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Autenticar na AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          role-session-name: tf-k8s-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # ── Validacao ───────────────────────────────────────────────────────────
+
+      - name: Formatacao
+        run: terraform fmt -check -recursive -diff
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - name: Selecionar workspace
+        run: terraform workspace select -or-create "${{ steps.ctx.outputs.env }}"
+
+      # ── Plan ────────────────────────────────────────────────────────────────
+
+      - name: Plan
+        if: inputs.acao != 'destroy'
+        run: |
+          terraform plan -input=false -no-color \
+            -var-file="${{ steps.ctx.outputs.env }}.tfvars" \
+            -out=tfplan
+
+      - name: Resumo do plano
+        if: inputs.acao != 'destroy'
+        run: |
+          {
+            echo "### Terraform — ${{ steps.ctx.outputs.env }}"
+            echo '```'
+            terraform show -no-color tfplan | tail -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Apply ───────────────────────────────────────────────────────────────
+
+      - name: Apply
+        if: github.event_name == 'push'
+        run: terraform apply -input=false -auto-approve tfplan
+
+      # Prova, com o kubectl, que o cluster subiu utilizavel - e nao apenas que
+      # a API da AWS respondeu "created". Autentica pela mesma role do apply,
+      # exercitando o Access Entry do CI.
+      - name: Conferir o cluster
+        if: github.event_name == 'push'
+        run: |
+          aws eks update-kubeconfig \
+            --name "$(terraform output -raw cluster_name)" \
+            --region "${{ env.AWS_REGION }}"
+
+          echo "--- nos ---"
+          kubectl get nodes -o wide
+
+          echo "--- namespaces ---"
+          kubectl get namespace "$(terraform output -raw namespace)"
+
+          echo "--- metrics-server ---"
+          kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
+
+          echo "--- metricas ja disponiveis? ---"
+          kubectl top nodes || echo "(metricas ainda agregando; normal nos primeiros minutos)"
+
+      - name: Resumo do cluster
+        if: github.event_name == 'push'
+        run: |
+          {
+            echo "### Cluster provisionado — ${{ steps.ctx.outputs.env }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Cluster | \`$(terraform output -raw cluster_name)\` |"
+            echo "| Kubernetes | \`$(terraform output -raw cluster_version)\` |"
+            echo "| Namespace | \`$(terraform output -raw namespace)\` |"
+            echo "| Acesso local | \`$(terraform output -raw configurar_kubectl)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Destroy manual ──────────────────────────────────────────────────────
+      # O item mais importante para o orcamento: derruba o control plane, que
+      # cobra ~US$ 0,10/hora esteja ou nao em uso.
+
+      - name: Destroy
+        if: github.event_name == 'workflow_dispatch' && inputs.acao == 'destroy'
+        run: |
+          terraform destroy -input=false -auto-approve \
+            -var-file="${{ steps.ctx.outputs.env }}.tfvars"
