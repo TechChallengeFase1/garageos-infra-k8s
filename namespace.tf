@@ -22,5 +22,18 @@ resource "kubernetes_namespace" "garageos" {
   # que o control plane responde, o que funciona - mas deixa o namespace pronto
   # antes de haver onde rodar pod, escondendo falhas do node group ate o
   # primeiro deploy.
-  depends_on = [aws_eks_node_group.main]
+  #
+  # A dependencia da Access Entry NAO e opcional, e o motivo aparece so no
+  # destroy: o Terraform destroi na ordem inversa da criacao. Sem declara-la,
+  # ele fica livre para remover o acesso do CI ao cluster ANTES de remover o
+  # namespace - e ai a propria pipeline perde a permissao e falha com
+  # "namespaces \"garageos\" is forbidden".
+  #
+  # Declarando, a ordem fica garantida:
+  #   criar   -> acesso, depois namespace
+  #   destroir -> namespace, depois acesso
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_access_policy_association.ci,
+  ]
 }
