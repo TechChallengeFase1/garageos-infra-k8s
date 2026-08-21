@@ -1,22 +1,37 @@
 name: Terraform
 
-# Mesma estrategia do garageos-infra-database:
+# Estrategia de deploy:
 #
-#   Pull Request  -> fmt + validate + plan. Nunca aplica.
-#   push homolog  -> apply no workspace "homolog"
-#   push main     -> apply no workspace "producao"
+#   Pull Request     -> fmt + validate + plan. Nunca aplica.
+#   push homolog     -> apply no workspace "homolog"
+#   push main        -> apply no workspace "producao"
+#   Run workflow     -> plan, apply ou destroy no ambiente escolhido
 #
 # Autenticacao por OIDC. Nenhuma credencial estatica da AWS neste repositorio.
 #
-# ATENCAO AO TEMPO: criar um cluster EKS leva 10 a 15 minutos, e o node group
-# mais alguns. A execucao pode passar de 20 minutos e parecer travada - e o
-# comportamento normal.
+# FILTRO DE CAMINHO: apply so dispara quando muda infraestrutura de verdade.
+# Sem isso, corrigir uma linha do README na main ressuscitaria o cluster
+# inteiro - o que atrapalha um projeto que sobe e desce o ambiente para
+# economizar credito.
+#
+# ATENCAO AO TEMPO: criar um cluster EKS leva 10 a 15 minutos, mais o node
+# group. A execucao pode passar de 20 minutos e parecer travada; e normal.
 
 on:
   pull_request:
     branches: [homolog, main]
+    paths:
+      - '*.tf'
+      - '*.tfvars'
+      - '.terraform.lock.hcl'
+      - '.github/workflows/terraform.yml'
   push:
     branches: [homolog, main]
+    paths:
+      - '*.tf'
+      - '*.tfvars'
+      - '.terraform.lock.hcl'
+      - '.github/workflows/terraform.yml'
   workflow_dispatch:
     inputs:
       ambiente:
@@ -25,11 +40,11 @@ on:
         type: choice
         options: [homolog, producao]
       acao:
-        description: "plan (seguro) ou destroy (derruba o cluster inteiro)"
+        description: "plan (so mostra) | apply (cria) | destroy (derruba o cluster)"
         required: true
         default: plan
         type: choice
-        options: [plan, destroy]
+        options: [plan, apply, destroy]
 
 permissions:
   id-token: write
@@ -41,34 +56,55 @@ env:
   AWS_ROLE: arn:aws:iam::266380777968:role/garageos-github-actions
   TF_VERSION: 1.15.7
 
+# Serializa por AMBIENTE ALVO, nao por ref.
+#
+# Agrupar por `github.ref` era um erro: o check de um PR (refs/pull/N/merge) e
+# o apply do merge (refs/heads/main) caem em grupos diferentes e rodam em
+# paralelo - disputando o mesmo state no S3. Como o backend usa lock, um dos
+# dois falha com "Error acquiring the state lock".
+#
+# Aqui um PR direcionado a main entra no mesmo grupo que um push na main,
+# entao o segundo espera o primeiro terminar.
 concurrency:
-  group: terraform-${{ github.ref }}
+  group: terraform-${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   terraform:
-    name: ${{ github.event_name == 'pull_request' && 'Validar' || 'Aplicar' }}
+    name: ${{ github.event_name == 'pull_request' && 'Validar' || 'Executar' }}
     runs-on: ubuntu-latest
-    # O EKS e lento: o padrao de 360 min e generoso demais e o de falha rapida
-    # nao serve. 45 minutos cobre criacao completa com folga.
     timeout-minutes: 45
 
+    # O environment `producao` e onde se configura required reviewers
+    # (Settings > Environments). Com isso o apply em producao fica pendente,
+    # esperando aprovacao, em vez de disparar sozinho.
     environment: ${{ github.event_name == 'pull_request' && 'validacao' || (github.ref_name == 'main' && 'producao' || 'homolog') }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Definir ambiente alvo
+      - name: Definir contexto
         id: ctx
         run: |
+          # Ambiente alvo
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "env=${{ inputs.ambiente }}" >> "$GITHUB_OUTPUT"
+            AMBIENTE="${{ inputs.ambiente }}"
           elif [ "${{ github.ref_name }}" = "main" ] || [ "${{ github.base_ref }}" = "main" ]; then
-            echo "env=producao" >> "$GITHUB_OUTPUT"
+            AMBIENTE="producao"
           else
-            echo "env=homolog" >> "$GITHUB_OUTPUT"
+            AMBIENTE="homolog"
           fi
+          echo "env=$AMBIENTE" >> "$GITHUB_OUTPUT"
+
+          # Vai aplicar? Push nas branches de deploy, ou acao manual "apply".
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.acao }}" = "apply" ]; then
+            echo "aplicar=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "aplicar=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Ambiente: $AMBIENTE"
 
       - name: Autenticar na AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -86,7 +122,7 @@ jobs:
       # ── Validacao ───────────────────────────────────────────────────────────
 
       - name: Formatacao
-        run: terraform fmt -check -recursive -diff
+        run: terraform fmt -check -diff
 
       - name: Init
         run: terraform init -input=false
@@ -119,14 +155,14 @@ jobs:
       # ── Apply ───────────────────────────────────────────────────────────────
 
       - name: Apply
-        if: github.event_name == 'push'
+        if: steps.ctx.outputs.aplicar == 'true'
         run: terraform apply -input=false -auto-approve tfplan
 
       # Prova, com o kubectl, que o cluster subiu utilizavel - e nao apenas que
       # a API da AWS respondeu "created". Autentica pela mesma role do apply,
-      # exercitando o Access Entry do CI.
+      # exercitando o Access Entry do CI de ponta a ponta.
       - name: Conferir o cluster
-        if: github.event_name == 'push'
+        if: steps.ctx.outputs.aplicar == 'true'
         run: |
           aws eks update-kubeconfig \
             --name "$(terraform output -raw cluster_name)" \
@@ -135,7 +171,7 @@ jobs:
           echo "--- nos ---"
           kubectl get nodes -o wide
 
-          echo "--- namespaces ---"
+          echo "--- namespace ---"
           kubectl get namespace "$(terraform output -raw namespace)"
 
           echo "--- metrics-server ---"
@@ -145,7 +181,7 @@ jobs:
           kubectl top nodes || echo "(metricas ainda agregando; normal nos primeiros minutos)"
 
       - name: Resumo do cluster
-        if: github.event_name == 'push'
+        if: steps.ctx.outputs.aplicar == 'true'
         run: |
           {
             echo "### Cluster provisionado — ${{ steps.ctx.outputs.env }}"
