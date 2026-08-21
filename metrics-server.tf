@@ -26,5 +26,11 @@ resource "helm_release" "metrics_server" {
   wait    = true
   timeout = 300
 
-  depends_on = [aws_eks_node_group.main]
+  # Mesma razao do namespace.tf: sem a dependencia da Access Entry, o destroy
+  # pode remover o acesso do CI ao cluster antes de desinstalar o chart, e o
+  # Helm falha por falta de permissao.
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_access_policy_association.ci,
+  ]
 }
