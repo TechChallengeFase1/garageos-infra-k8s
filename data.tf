@@ -26,6 +26,12 @@ data "aws_ssm_parameter" "github_actions_role_arn" {
   name = "/${var.project}/iam/github-actions-role-arn"
 }
 
+# Onde estao os segredos compartilhados da aplicacao. Usado em newrelic.tf
+# para a license key de ingestao.
+data "aws_ssm_parameter" "app_secret_arn" {
+  name = "/${var.project}/app/secret-arn"
+}
+
 # O cracha criado pelo garageos-infra-database. Anexa-lo aos nos e o que da ao
 # cluster acesso ao PostgreSQL - sem precisar saber IP de ninguem.
 data "aws_ssm_parameter" "rds_client_sg_id" {
