@@ -13,3 +13,14 @@ node_instance_type = "t3.small"
 node_desired_size  = 2
 node_min_size      = 2
 node_max_size      = 4
+
+# Quem pode usar kubectl a partir da propria maquina.
+#
+# bootstrap_cluster_creator_admin_permissions esta desligado e o
+# authentication_mode e "API": sem o ARN listado aqui, o kubectl autentica na
+# AWS normalmente e o cluster responde Unauthorized - o que parece problema de
+# credencial, mas e falta de Access Entry.
+admin_principal_arns = [
+  "arn:aws:iam::266380777968:user/AdministratorAccess",
+  "arn:aws:iam::266380777968:user/joao",
+]
