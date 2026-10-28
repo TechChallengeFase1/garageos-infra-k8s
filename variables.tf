@@ -33,7 +33,8 @@ variable "node_instance_type" {
     memoria. Com 2 nos sao 22 pods: cerca de 7 do sistema (coredns, aws-node,
     kube-proxy, metrics-server) e folga para os 10 replicas maximos do HPA.
 
-    t3.medium dobraria a folga e o custo (~US$ 60/mes contra ~US$ 30).
+    t3.medium (2 vCPU, 4 GB) suporta 17 pods por no e e o tipo usado em
+    producao a partir da Fase 4, com 3 microsservicos no cluster.
   EOT
   type        = string
   default     = "t3.small"
@@ -76,4 +77,25 @@ variable "metrics_server_version" {
   description = "Versao do chart Helm do metrics-server"
   type        = string
   default     = "3.12.2"
+}
+
+variable "service_namespaces" {
+  description = <<-EOT
+    Namespaces dos microsservicos da Fase 4, um por servico (ADR 0004 do
+    garageos-app). Cada repositorio de servico aplica seus manifestos no
+    proprio namespace, o que isola Secrets, ConfigMaps e ServiceAccounts.
+    A chave e o nome curto do servico, usado no caminho do SSM.
+  EOT
+  type        = map(string)
+  default = {
+    os       = "garageos-os"
+    billing  = "garageos-billing"
+    execucao = "garageos-execucao"
+  }
+}
+
+variable "traefik_chart_version" {
+  description = "Versao do chart Helm do Traefik, fixada como a do metrics-server"
+  type        = string
+  default     = "34.4.0"
 }
