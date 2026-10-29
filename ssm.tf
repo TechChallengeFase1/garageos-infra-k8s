@@ -33,3 +33,25 @@ resource "aws_ssm_parameter" "oidc_provider_arn" {
   type        = "String"
   value       = aws_iam_openid_connect_provider.cluster.arn
 }
+
+# ─── Fase 4 ──────────────────────────────────────────────────────────────────
+
+# Namespace de cada microsservico. O CD de cada repo le o seu daqui, no mesmo
+# padrao do /eks/namespace acima.
+resource "aws_ssm_parameter" "service_namespace" {
+  for_each = kubernetes_namespace.servico
+
+  name        = "/${var.project}/${local.env}/eks/namespace/${each.key}"
+  description = "Namespace onde o garageos-${each.key}-service aplica os manifestos"
+  type        = "String"
+  value       = each.value.metadata[0].name
+}
+
+# "<namespace>/<service>" do Traefik. O garageos-lambda-auth usa isto para achar
+# o NLB pela tag kubernetes.io/service-name, sem escrever o nome a mao.
+resource "aws_ssm_parameter" "ingress_service_name" {
+  name        = "/${var.project}/${local.env}/ingress/service-name"
+  description = "Service do Traefik, no formato namespace/nome, para localizar o NLB"
+  type        = "String"
+  value       = "${helm_release.traefik.namespace}/traefik"
+}

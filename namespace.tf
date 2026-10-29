@@ -1,4 +1,5 @@
-# Namespace da aplicacao.
+# Namespace da aplicacao monolitica (Fase 3). Fica ate o corte da Fase 4,
+# quando o garageos-app deixa de rodar aqui.
 #
 # A infraestrutura entrega o namespace vazio; o repo garageos-app aplica dentro
 # dele o Deployment, Service, ConfigMap, Secret e HPA. E a fronteira entre os
@@ -32,6 +33,29 @@ resource "kubernetes_namespace" "garageos" {
   # Declarando, a ordem fica garantida:
   #   criar   -> acesso, depois namespace
   #   destroir -> namespace, depois acesso
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_eks_access_policy_association.ci,
+  ]
+}
+
+# Namespaces dos microsservicos da Fase 4.
+#
+# Mesma fronteira do namespace acima, agora uma por servico: a infraestrutura
+# entrega o namespace vazio e o repositorio de cada servico aplica dentro dele.
+# As mesmas dependencias valem, pelos mesmos motivos.
+resource "kubernetes_namespace" "servico" {
+  for_each = var.service_namespaces
+
+  metadata {
+    name = each.value
+    labels = {
+      "app.kubernetes.io/part-of"    = "garageos"
+      "app.kubernetes.io/managed-by" = "terraform"
+      "garageos/servico"             = each.key
+    }
+  }
+
   depends_on = [
     aws_eks_node_group.main,
     aws_eks_access_policy_association.ci,
