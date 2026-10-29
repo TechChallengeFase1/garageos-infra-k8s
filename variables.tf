@@ -33,8 +33,9 @@ variable "node_instance_type" {
     memoria. Com 2 nos sao 22 pods: cerca de 7 do sistema (coredns, aws-node,
     kube-proxy, metrics-server) e folga para os 10 replicas maximos do HPA.
 
-    t3.medium (2 vCPU, 4 GB) suporta 17 pods por no e e o tipo usado em
-    producao a partir da Fase 4, com 3 microsservicos no cluster.
+    c7i-flex.large (2 vCPU, 4 GB) suporta 29 pods por no e e o tipo usado em
+    producao a partir da Fase 4, com 3 microsservicos no cluster. O t3.medium
+    seria mais barato, mas nao e elegivel no plano gratuito da conta.
   EOT
   type        = string
   default     = "t3.small"
